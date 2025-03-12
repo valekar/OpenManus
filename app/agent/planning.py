@@ -8,6 +8,7 @@ from app.logger import logger
 from app.prompt.planning import NEXT_STEP_PROMPT, PLANNING_SYSTEM_PROMPT
 from app.schema import Message, ToolCall
 from app.tool import PlanningTool, Terminate, ToolCollection
+from app.tool.file_saver import FileSaver
 
 
 class PlanningAgent(ToolCallAgent):
@@ -115,6 +116,9 @@ class PlanningAgent(ToolCallAgent):
 
     async def run(self, request: Optional[str] = None) -> str:
         """Run the agent with an optional initial request."""
+        # Reset the FileSaver session to create a new timestamp for this prompt
+        FileSaver.reset_session()
+        
         if request:
             await self.create_initial_plan(request)
         return await super().run()

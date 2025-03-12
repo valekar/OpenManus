@@ -1,4 +1,5 @@
 import os
+import datetime
 
 import aiofiles
 
@@ -40,6 +41,31 @@ To use this tool properly, always provide both the 'content' and 'file_path' par
         },
         "required": ["content", "file_path"],
     }
+    
+    # Class variable to store the timestamp for the current prompt execution
+    # This ensures all files from the same prompt execution go to the same folder
+    _current_session_timestamp = None
+    
+    @classmethod
+    def reset_session(cls):
+        """Reset the session timestamp to create a new output folder for a new prompt execution"""
+        cls._current_session_timestamp = None
+    
+    @classmethod
+    def get_session_folder(cls, output_dir="output"):
+        """Get or create a session folder based on the current timestamp"""
+        if cls._current_session_timestamp is None:
+            # Only create a new timestamp when needed, once per prompt execution
+            cls._current_session_timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        
+        # Create the output directory with timestamp
+        timestamped_output_dir = os.path.join(output_dir, f"result_{cls._current_session_timestamp}")
+        
+        # Ensure the timestamped output directory exists
+        if not os.path.exists(timestamped_output_dir):
+            os.makedirs(timestamped_output_dir)
+            
+        return timestamped_output_dir
 
     @staticmethod
     def generate_default_content(file_path: str) -> str:
@@ -135,24 +161,41 @@ function greet(name) {
             return f"Error: Invalid mode '{mode}'. Mode must be 'w' (write) or 'a' (append)."
 
         try:
-            # Check if the path is absolute
-            if not os.path.isabs(file_path):
-                # Ensure the output directory exists
-                if not os.path.exists(output_dir):
-                    os.makedirs(output_dir)
-                # Prepend the output directory to the file path
-                file_path = os.path.join(output_dir, file_path)
+            # Get the session folder (creates it only once per prompt execution)
+            timestamped_output_dir = self.get_session_folder(output_dir)
             
-            # Ensure the directory structure for the file exists
-            directory = os.path.dirname(file_path)
+            # Check if the path is absolute
+            if os.path.isabs(file_path):
+                # For absolute paths, extract just the filename or respect relative structure
+                # This prevents writing to paths outside the output directory
+                if "/" in file_path or "\\" in file_path:
+                    # Get the path relative to the root
+                    relative_path = os.path.basename(file_path)
+                    logger.warning(f"Absolute path detected: {file_path}. Converting to {relative_path} to prevent modifying files outside output directory.")
+                    file_path = relative_path
+                else:
+                    # Already just a filename
+                    pass
+            else:
+                # Remove any existing output directory prefix from the file_path to avoid nesting
+                # For example, if file_path is "output/file.md", we want to extract just "file.md"
+                if file_path.startswith(f"{output_dir}/"):
+                    file_path = file_path[len(f"{output_dir}/"):]
+            
+            # Preserve the structure specified by the LLM within the file_path
+            # But ensure it's all contained within the timestamped output directory
+            final_path = os.path.join(timestamped_output_dir, file_path)
+            
+            # Ensure the directory structure exists
+            directory = os.path.dirname(final_path)
             if directory and not os.path.exists(directory):
                 os.makedirs(directory)
-
+            
             # Write directly to the file
-            async with aiofiles.open(file_path, mode, encoding="utf-8") as file:
+            async with aiofiles.open(final_path, mode, encoding="utf-8") as file:
                 await file.write(content)
 
-            return f"Content successfully saved to {file_path}"
+            return f"Content successfully saved to {final_path}"
         except Exception as e:
             logger.error(f"Error in FileSaver: {str(e)}")
             return f"Error saving file: {str(e)}"
