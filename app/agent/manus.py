@@ -7,6 +7,7 @@ from app.tool.browser_use_tool import BrowserUseTool
 from app.tool.file_saver import FileSaver
 from app.tool.google_search import GoogleSearch
 from app.tool.python_execute import PythonExecute
+from typing import Optional
 
 
 class Manus(ToolCallAgent):
@@ -34,3 +35,21 @@ class Manus(ToolCallAgent):
     )
 
     max_steps: int = 20
+    
+    async def run(self, request: Optional[str] = None) -> str:
+        """
+        Execute the agent's main loop with a reset of FileSaver session.
+        
+        This ensures each prompt creates a single timestamped output folder.
+        
+        Args:
+            request: Optional initial user request to process.
+            
+        Returns:
+            A string summarizing the execution results.
+        """
+        # Reset the FileSaver session to create a new timestamp for this prompt
+        FileSaver.reset_session()
+        
+        # Call the parent class run method to handle the execution
+        return await super().run(request)

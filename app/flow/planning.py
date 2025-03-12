@@ -1,10 +1,12 @@
 import json
+import os
 import time
 from typing import Dict, List, Optional, Union
 
 from pydantic import Field
 
 from app.agent.base import BaseAgent
+from app.agent.toolcall import OUTPUT_DIR
 from app.flow.base import BaseFlow, PlanStepStatus
 from app.llm import LLM
 from app.logger import logger
@@ -20,6 +22,8 @@ class PlanningFlow(BaseFlow):
     executor_keys: List[str] = Field(default_factory=list)
     active_plan_id: str = Field(default_factory=lambda: f"plan_{int(time.time())}")
     current_step_index: Optional[int] = None
+    output_directory: str = OUTPUT_DIR
+    previous_outputs: Dict[int, List[str]] = Field(default_factory=dict)
 
     def __init__(
         self, agents: Union[BaseAgent, List[BaseAgent], Dict[str, BaseAgent]], **data
@@ -32,6 +36,10 @@ class PlanningFlow(BaseFlow):
         if "plan_id" in data:
             data["active_plan_id"] = data.pop("plan_id")
 
+        # Set output directory if provided
+        if "output_dir" in data:
+            data["output_directory"] = data.pop("output_dir")
+
         # Initialize the planning tool if not provided
         if "planning_tool" not in data:
             planning_tool = PlanningTool()
@@ -43,23 +51,37 @@ class PlanningFlow(BaseFlow):
         # Set executor_keys to all agent keys if not specified
         if not self.executor_keys:
             self.executor_keys = list(self.agents.keys())
+            
+        # Ensure output directory exists
+        if not os.path.exists(self.output_directory):
+            os.makedirs(self.output_directory)
 
     def get_executor(self, step_type: Optional[str] = None) -> BaseAgent:
         """
         Get an appropriate executor agent for the current step.
         Can be extended to select agents based on step type/requirements.
         """
-        # If step type is provided and matches an agent key, use that agent
-        if step_type and step_type in self.agents:
-            return self.agents[step_type]
+        # Default to first executor if only one available
+        if len(self.executor_keys) == 1:
+            key = self.executor_keys[0]
+            executor = self.agents.get(key)
+            
+            # Set the output directory for the agent if it's a property
+            if hasattr(executor, "output_directory"):
+                executor.output_directory = self.output_directory
+                
+            return executor
 
-        # Otherwise use the first available executor or fall back to primary agent
-        for key in self.executor_keys:
-            if key in self.agents:
-                return self.agents[key]
-
-        # Fallback to primary agent
-        return self.primary_agent
+        # TODO: Implement logic for selecting appropriate agent based on step type
+        # For now, just use the first executor
+        key = self.executor_keys[0]
+        executor = self.agents.get(key)
+        
+        # Set the output directory for the agent if it's a property
+        if hasattr(executor, "output_directory"):
+            executor.output_directory = self.output_directory
+            
+        return executor
 
     async def execute(self, input_text: str) -> str:
         """Execute the planning flow with agents."""
@@ -227,33 +249,60 @@ class PlanningFlow(BaseFlow):
             return None, None
 
     async def _execute_step(self, executor: BaseAgent, step_info: dict) -> str:
-        """Execute the current step with the specified agent using agent.run()."""
-        # Prepare context for the agent with current plan status
-        plan_status = await self._get_plan_text()
-        step_text = step_info.get("text", f"Step {self.current_step_index}")
+        """Execute a single step with the given executor"""
+        # Extract step info
+        step_id = step_info.get("id", "unknown")
+        step_desc = step_info.get("description", "No description provided")
+        step_index = step_info.get("index", 0)
+        
+        # Prepare context about previous outputs
+        previous_outputs_info = ""
+        if step_index > 0 and self.previous_outputs:
+            previous_outputs_info = "\n\nPrevious Task Outputs:\n"
+            for prev_idx, outputs in self.previous_outputs.items():
+                if prev_idx < step_index:
+                    previous_outputs_info += f"- Step {prev_idx + 1}: {', '.join(outputs)}\n"
+            previous_outputs_info += f"\nAll outputs are stored in the '{self.output_directory}' directory.\n"
+        
+        # Build the step prompt
+        step_prompt = f"Step {step_index + 1}: {step_desc}" + previous_outputs_info
+        
+        # Set the output directory for the agent if it's a property
+        if hasattr(executor, "output_directory"):
+            executor.output_directory = self.output_directory
 
-        # Create a prompt for the agent to execute the current step
-        step_prompt = f"""
-        CURRENT PLAN STATUS:
-        {plan_status}
-
-        YOUR CURRENT TASK:
-        You are now working on step {self.current_step_index}: "{step_text}"
-
-        Please execute this step using the appropriate tools. When you're done, provide a summary of what you accomplished.
-        """
-
-        # Use agent.run() to execute the step
+        # Execute the step using the chosen agent
+        logger.info(f"⚙️ Executing step {step_index + 1}: {step_desc}")
         try:
-            step_result = await executor.run(step_prompt)
-
-            # Mark the step as completed after successful execution
-            await self._mark_step_completed()
-
-            return step_result
+            result = await executor.run(step_prompt)
+            
+            # Record output files from this step
+            output_files = self._scan_new_output_files(step_index)
+            if output_files:
+                self.previous_outputs[step_index] = output_files
+                
+            return result
         except Exception as e:
-            logger.error(f"Error executing step {self.current_step_index}: {e}")
-            return f"Error executing step {self.current_step_index}: {str(e)}"
+            logger.error(f"❌ Error executing step {step_id}: {str(e)}")
+            return f"Error executing step: {str(e)}"
+    
+    def _scan_new_output_files(self, step_index: int) -> List[str]:
+        """Scan the output directory for files created during this step"""
+        if not os.path.exists(self.output_directory):
+            return []
+            
+        # Get all files in the output directory
+        files = [f for f in os.listdir(self.output_directory) 
+                if os.path.isfile(os.path.join(self.output_directory, f))]
+        
+        # Get files that haven't been recorded in previous steps
+        all_previous_files = []
+        for idx, file_list in self.previous_outputs.items():
+            if idx < step_index:
+                all_previous_files.extend(file_list)
+                
+        new_files = [f for f in files if f not in all_previous_files]
+        return new_files
 
     async def _mark_step_completed(self) -> None:
         """Mark the current step as completed."""

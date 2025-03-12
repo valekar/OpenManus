@@ -1,10 +1,12 @@
 import asyncio
+import sys
 import time
 
 from app.agent.manus import Manus
 from app.flow.base import FlowType
 from app.flow.flow_factory import FlowFactory
 from app.logger import logger
+from app.tool.file_saver import FileSaver
 
 
 async def run_flow():
@@ -13,12 +15,21 @@ async def run_flow():
     }
 
     try:
-        prompt = input("Enter your prompt: ")
+        # Check if input is being piped from a file or redirected
+        if not sys.stdin.isatty():
+            # Read from stdin (piped input)
+            prompt = sys.stdin.read().strip()
+        else:
+            # Interactive input from terminal
+            prompt = input("Enter your prompt: ")
 
         if prompt.strip().isspace() or not prompt:
             logger.warning("Empty prompt provided.")
             return
 
+        # Reset the FileSaver session to create a new timestamped folder for this prompt
+        FileSaver.reset_session()
+        
         flow = FlowFactory.create_flow(
             flow_type=FlowType.PLANNING,
             agents=agents,
