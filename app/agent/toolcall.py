@@ -36,6 +36,8 @@ class ToolCallAgent(ReActAgent):
 
     max_steps: int = 30
 
+    last_thought: str = None
+
     async def think(self) -> bool:
         """Process current state and decide next actions using tools"""
         if self.next_step_prompt:
@@ -59,6 +61,9 @@ class ToolCallAgent(ReActAgent):
             tool_choice=self.tool_choices,
         )
         self.tool_calls = response.tool_calls
+        
+        # Store the response content as the last thought for potential content extraction
+        self.last_thought = response.content
 
         # Log response info
         logger.info(f"✨ {self.name}'s thoughts: {response.content}")
@@ -69,6 +74,9 @@ class ToolCallAgent(ReActAgent):
             logger.info(
                 f"🧰 Tools being prepared: {[call.function.name for call in response.tool_calls]}"
             )
+            # Log the raw tool call arguments for debugging
+            for call in response.tool_calls:
+                logger.debug(f"📝 Tool call details for {call.function.name}: {call.function.arguments}")
 
         try:
             # Handle different tool_choices modes
@@ -185,9 +193,39 @@ class ToolCallAgent(ReActAgent):
             # Special handling for file_saver tool
             if name == "file_saver":
                 if "content" not in args:
-                    error_msg = f"Error: Missing required 'content' parameter for file_saver tool"
-                    logger.error(f"📝 {error_msg}, received arguments: {command.function.arguments}")
-                    return f"Error: {error_msg}"
+                    # Log the full command details for debugging
+                    logger.debug(f"Full command details: {command}")
+
+                    # Try to extract content from the agent's last thought
+                    content_from_thought = None
+                    
+                    # If the agent has recorded a last thought, try to use it
+                    if hasattr(self, 'last_thought') and self.last_thought:
+                        logger.debug(f"Attempting to extract content from last thought")
+                        
+                        # Find markdown code blocks in the thought 
+                        code_blocks = re.findall(r'```(?:\w*)\s*\n(.*?)\n```', self.last_thought, re.DOTALL) 
+                        if code_blocks:
+                            content_from_thought = code_blocks[-1]  # Use the last code block
+                            logger.info(f"✅ Found content in code block from the last thought")
+                        else:
+                            # Try to find any substantial content that might work as file content
+                            # This is a fallback if there are no code blocks
+                            if len(self.last_thought) > 100:  # Only use if it's substantial
+                                content_from_thought = self.last_thought
+                                logger.info(f"✅ Using the entire last thought as content")
+                    
+                    if content_from_thought:
+                        args["content"] = content_from_thought
+                        logger.info(f"📝 Automatically added content from agent's thought for file_saver")
+                        
+                        # Execute with the extracted content
+                        result = await self.available_tools.execute(name=name, tool_input=args)
+                        return f"Observed output of cmd `{name}` executed (with auto-extracted content):\n{str(result)}"
+                    else:
+                        error_msg = f"Error: Missing required 'content' parameter for file_saver tool"
+                        logger.error(f"📝 {error_msg}, received arguments: {command.function.arguments}")
+                        return f"Error: {error_msg}"
                 if "file_path" not in args:
                     error_msg = f"Error: Missing required 'file_path' parameter for file_saver tool"
                     logger.error(f"📝 {error_msg}, received arguments: {command.function.arguments}")

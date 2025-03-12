@@ -6,7 +6,7 @@ NEXT_STEP_PROMPT = """You can interact with the computer using PythonExecute, sa
 
 PythonExecute: Execute Python code to interact with the computer system, data processing, automation tasks, etc.
 
-FileSaver: Save files locally, such as txt, py, html, etc. Files will be saved to the 'output' directory by default unless an absolute path is provided. You can access previous task outputs from this directory.
+FileSaver: Save files locally, such as txt, py, html, etc. Files will be saved to the 'output' directory by default unless an absolute path is provided. When using this tool, you MUST include both 'file_path' and 'content' parameters. The content parameter must contain the actual text/code/data to be written to the file. Example: { "file_path": "README.md", "content": "# Project Title\n\nThis is the content of the file." }
 
 BrowserUseTool: Open, browse, and use web browsers. If you open a local HTML file, you must provide the absolute path to the file.
 
